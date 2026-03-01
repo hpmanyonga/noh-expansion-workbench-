@@ -1,0 +1,19 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Inputs — raw financial models, not committed
+inputs/*.xlsx
+inputs/*.csv
+inputs/*.xls
+
+# Secrets
+.env
+*.key
+*.pem

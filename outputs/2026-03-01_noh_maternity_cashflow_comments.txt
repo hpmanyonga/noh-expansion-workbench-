@@ -1,0 +1,29 @@
+Workbook: 2026-02-24_noh_maternity_cashflow_model_24m.xlsx
+
+SHEETS
+- Model_24m
+
+COMMENTS
+[Model_24m] B7
+Author: Model
+Cell value: 40000
+Comment:
+Gross receipt per Cash birth (before fee splits).
+
+[Model_24m] B8
+Author: Model
+Cell value: 50000
+Comment:
+Gross receipt per MA birth (before fee splits).
+
+[Model_24m] B10
+Author: Model
+Cell value: 0.4868
+Comment:
+Medicare fee % of receipts. Derived from your original model split.
+
+[Model_24m] B19
+Author: Model
+Cell value: 3900
+Comment:
+OB payment per enrolled patient per month (active clients).
