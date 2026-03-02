@@ -49,21 +49,26 @@ def run_model(name, p):
         cs_cases   = births * cs_rate
         nvd_cases  = births - cs_cases
 
-        # --- Revenue ---
-        total_receipts = cash_cases * p["pr_cash"] + ma_cases * p["pr_ma"]
+        # --- Revenue (prices escalate at CPI monthly compounding) ---
+        cpi_factor     = (1 + p["cpi_annual"]) ** ((m - 1) / 12)
+        pr_cash_m      = p["pr_cash"] * cpi_factor
+        pr_ma_m        = p["pr_ma"]   * cpi_factor
+        total_receipts = cash_cases * pr_cash_m + ma_cases * pr_ma_m
         noh_fee        = total_receipts * p["noh_fee_pct"]
         medicare_fee   = total_receipts * p["medicare_fee_pct"]
         residual       = total_receipts - noh_fee - medicare_fee
 
         # --- Antenatal midwifery ---
-        # R300/visit × 10 visits per enrolled patient episode
-        antenatal_midwifery = births * p["antenatal_visits_per_episode"] * p["antenatal_visit_fee"]
+        # 10 visits per episode: 2 long (1 hr) + 8 short (0.5 hr) at R300/hr
+        antenatal_midwifery = births * (
+            p["antenatal_long_visits"]  * p["antenatal_long_visit_hrs"]  * p["antenatal_visit_rate"] +
+            p["antenatal_short_visits"] * p["antenatal_short_visit_hrs"] * p["antenatal_visit_rate"]
+        )
 
         # --- In-hospital midwifery ---
-        # Applies only to midwife-only NVD births (excludes MO-assisted NVD and all CS).
-        # When an MO is called, midwife cost is not applied.
-        midwife_only_nvd = nvd_cases * (1 - p["mo_nvd_pct"])
-        inhosp_midwifery = midwife_only_nvd * p["inhosp_midwife_hours"] * p["inhosp_midwife_rate"]
+        # Collapsed into per diem (midwives on hospital payroll).
+        # NVD allowance: R200/day uplift; CS allowance: R300/day uplift — embedded in board rates.
+        inhosp_midwifery = 0
 
         # --- MO costs (revised) ---
         # Session fee: driven by enrolments (unchanged)
@@ -77,17 +82,20 @@ def run_model(name, p):
         # --- Anaesthesia (CS only, unchanged) ---
         anaes_cost = cs_cases * p["anaes_fee_per_cs"]
 
-        # --- OB pool (unchanged) ---
-        ob_cores = 3 if (enrolments > p["ob_add_core_enrolments"] or births > p["ob_add_core_births"]) else 2
-        ob_pool  = min(ob_cores * p["ob_retainer"] + p["ob_pepm"] * enrolments, p["ob_pool_cap"])
+        # --- OB pool (restructured) ---
+        # Antenatal episode fee (all births) + CS delivery fee + oversight per delivery
+        ob_pool = (
+            births   * p["ob_antenatal_fee"] +
+            cs_cases * p["ob_cs_delivery_fee"] +
+            births   * p["ob_oversight_per_delivery"]
+        )
 
         # --- Board / facility fee ---
-        # Proxy for hospital fee per patient-day (covers board, medicines, materials)
-        # NVD = 1 day (2 days, 1 night); CS = 2 days (3 days, 2 nights)
+        # NVD: 36 hrs (1.5 days) × R3,000/day; CS: 60 hrs (2.5 days) × R5,000/day
         board_facility = (
-            nvd_cases * p["nvd_los_days"] +
-            cs_cases  * p["cs_los_days"]
-        ) * p["room_rate_per_day"]
+            nvd_cases * p["nvd_los_days"] * p["nvd_room_rate"] +
+            cs_cases  * p["cs_los_days"]  * p["cs_room_rate"]
+        )
 
         # --- Cost totals ---
         midwifery_costs  = antenatal_midwifery + inhosp_midwifery
@@ -117,7 +125,6 @@ def run_model(name, p):
             "mo_birth_cost":         round(mo_birth_cost),
             "mo_cost":               round(mo_cost),
             "anaes_cost":            round(anaes_cost),
-            "ob_cores":              ob_cores,
             "ob_pool":               round(ob_pool),
             "clinician_costs":       round(clinician_costs),
             "board_facility":        round(board_facility),
@@ -146,30 +153,31 @@ BASE = {
     "cs_rate_start":              0.42,
     "cs_rate_target":             0.30,
     "cs_months":                  12,
-    # Antenatal midwifery
-    "antenatal_visits_per_episode": 10,
-    "antenatal_visit_fee":          300,
-    # In-hospital midwifery (midwife-only NVD births only; excluded when MO is called)
-    "inhosp_midwife_hours":       10,    # average hours per midwife-only delivery
-    "inhosp_midwife_rate":        200,   # R/hr
+    # Antenatal midwifery: 2 long visits (1 hr) + 8 short visits (0.5 hr) at R350/hr
+    "antenatal_long_visits":        2,
+    "antenatal_long_visit_hrs":     1.0,
+    "antenatal_short_visits":       8,
+    "antenatal_short_visit_hrs":    0.5,
+    "antenatal_visit_rate":         310,   # R/hr
+    # In-hospital midwifery: collapsed into per diem (midwives on hospital payroll)
     # MO (revised: only MO-involved NVDs + CS)
-    "mo_nvd_pct":                 0.175,   # midpoint of 15-20%
-    "mo_session_fee":             2_000,
-    "mo_births_fee":              3_000,
-    "mo_clients_per_session":     40,
+    "mo_nvd_pct":                   0.175,
+    "mo_session_fee":               2_000,
+    "mo_births_fee":                3_000,
+    "mo_clients_per_session":       40,
     # Anaesthesia
-    "anaes_fee_per_cs":           5_000,
-    # OB pool
-    "ob_retainer":                5_000,
-    "ob_pepm":                    3_900,
-    "ob_pool_cap":                300_000,
-    "locum_rate":                 0.05,
-    "ob_add_core_enrolments":     75,
-    "ob_add_core_births":         65,
-    # Board / facility fee (proxy: board + medicines + materials per patient-day)
-    "nvd_los_days":               1,       # 2 days, 1 night
-    "cs_los_days":                2,       # 3 days, 2 nights
-    "room_rate_per_day":          2_500,   # ← adjust to calibrate hospital fee
+    "anaes_fee_per_cs":             5_000,
+    # OB pool (restructured: antenatal episode + CS delivery + oversight per delivery)
+    "ob_antenatal_fee":             3_000,  # per birth (all births)
+    "ob_cs_delivery_fee":           5_000,  # per CS birth
+    "ob_oversight_per_delivery":    750,    # per total delivery per month
+    # Board / facility fee
+    "nvd_los_days":                 1.0,    # 24 hrs
+    "cs_los_days":                  2.0,    # 48 hrs
+    "nvd_room_rate":                3_200,  # R/day (incl. R200 midwifery allowance)
+    "cs_room_rate":                 4_900,  # R/day (incl. R300 midwifery allowance)
+    # CPI escalation (applied monthly to both cash and MA prices)
+    "cpi_annual":                   0.06,   # 6% per year
 }
 
 SCENARIOS = {
@@ -198,6 +206,12 @@ SCENARIOS = {
         "cs_rate_target":      0.42,
         "cs_months":           12,
     },
+
+    "price_stress": {**BASE,
+        # Price sensitivity: CPI at floor rate of 4% (vs base 6%)
+        # Applied to both cash and MA prices
+        "cpi_annual":          0.04,     # floor CPI — minimum allowable escalation
+    },
 }
 
 COLUMNS = [
@@ -206,7 +220,7 @@ COLUMNS = [
     "total_receipts", "noh_fee", "medicare_fee", "residual",
     "antenatal_midwifery", "inhosp_midwifery", "midwifery_costs",
     "mo_session_cost", "mo_birth_cost", "mo_cost",
-    "anaes_cost", "ob_cores", "ob_pool", "clinician_costs",
+    "anaes_cost", "ob_pool", "clinician_costs",
     "board_facility", "total_costs",
     "net_cashflow", "cumulative_cash",
 ]

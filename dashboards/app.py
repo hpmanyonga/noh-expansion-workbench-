@@ -1,16 +1,20 @@
 # NOH Maternity Cashflow Dashboard
 # Run: streamlit run dashboards/app.py
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from pathlib import Path
+from scenario_model import run_model, BASE
 
 st.set_page_config(page_title="NOH Maternity Cashflow", layout="wide")
 
 st.title("NOH Maternity Programme — 24-Month Cashflow Model")
-st.caption("Disaggregated costs: antenatal midwifery · in-hospital midwifery · clinicians · board/facility · Rustenburg")
+st.caption("Disaggregated costs: antenatal midwifery · in-hospital midwifery · clinicians · board/facility · Rustenburg · Prices escalate at CPI")
 
 OUT_DIR = Path("outputs")
 
@@ -19,45 +23,112 @@ SCENARIO_COLORS = {
     "optimistic":    "#2e6b68",
     "conservative":  "#f3bdc4",
     "high_cs_rate":  "#d4878f",
+    "price_stress":  "#e8c07a",
+    "custom":        "#7b5ea7",
 }
 
-# --- Load data ---
+SCENARIO_LABELS = {
+    "base":          "Base (6% CPI)",
+    "optimistic":    "Optimistic",
+    "conservative":  "Conservative",
+    "high_cs_rate":  "High CS Rate",
+    "price_stress":  "Price Stress (4% CPI floor)",
+    "custom":        "Live Negotiation",
+}
+
+# --- Load pre-computed data (always picks the latest dated files) ---
 @st.cache_data
 def load_scenarios():
-    path = OUT_DIR / "2026-03-01_scenario_all.csv"
-    if not path.exists():
-        st.error(f"Missing: {path}. Run src/scenario_model.py first.")
+    files = sorted(OUT_DIR.glob("*_scenario_all.csv"))
+    if not files:
+        st.error("Missing scenario_all.csv. Run src/scenario_model.py first.")
         st.stop()
-    return pd.read_csv(path)
+    return pd.read_csv(files[-1])
 
 @st.cache_data
 def load_summary():
-    path = OUT_DIR / "2026-03-01_scenario_summary.csv"
-    if not path.exists():
-        st.error(f"Missing: {path}. Run src/scenario_model.py first.")
+    files = sorted(OUT_DIR.glob("*_scenario_summary.csv"))
+    if not files:
+        st.error("Missing scenario_summary.csv. Run src/scenario_model.py first.")
         st.stop()
-    return pd.read_csv(path)
+    return pd.read_csv(files[-1])
 
 df      = load_scenarios()
 summary = load_summary()
 
-# --- Sidebar ---
-st.sidebar.header("Filters")
+# --- Sidebar: scenario filter ---
+st.sidebar.header("Scenarios")
+all_scenarios = df["scenario"].unique().tolist() + ["custom"]
 selected = st.sidebar.multiselect(
-    "Scenarios",
-    options=df["scenario"].unique().tolist(),
-    default=df["scenario"].unique().tolist(),
+    "Show scenarios",
+    options=all_scenarios,
+    format_func=lambda s: SCENARIO_LABELS.get(s, s),
+    default=all_scenarios,
 )
-df_f = df[df["scenario"].isin(selected)]
+
+# --- Sidebar: live negotiation sliders ---
+st.sidebar.divider()
+st.sidebar.header("Live Negotiation")
+st.sidebar.caption("Adjust assumptions to model different partnership terms.")
+
+custom_births      = st.sidebar.slider("Birth volume target (Month 24)", 20, 120, int(BASE["births_end"]), step=1)
+custom_board_rate  = st.sidebar.slider("Board / facility rate (R/day)", 1_000, 6_000, int(BASE["room_rate_per_day"]), step=100)
+custom_cs_rate     = st.sidebar.slider("CS rate target (%)", 20, 55, int(BASE["cs_rate_target"] * 100)) / 100
+custom_ma_share    = st.sidebar.slider("MA share target (%)", 20, 80, int(BASE["ma_share_target"] * 100)) / 100
+custom_noh_fee     = st.sidebar.slider("NOH fee (%)", 5, 25, int(BASE["noh_fee_pct"] * 100)) / 100
+
+# --- Compute live custom scenario (runs on every slider change) ---
+custom_params = {**BASE,
+    "births_end":       custom_births,
+    "enrolments_end":   max(1, round(custom_births * (BASE["enrolments_end"] / BASE["births_end"]))),
+    "room_rate_per_day": custom_board_rate,
+    "cs_rate_target":   custom_cs_rate,
+    "ma_share_target":  custom_ma_share,
+    "noh_fee_pct":      custom_noh_fee,
+}
+custom_rows   = run_model("custom", custom_params)
+df_custom     = pd.DataFrame(custom_rows)
+custom_m12    = custom_rows[11]
+custom_m24    = custom_rows[23]
+custom_summary = pd.DataFrame([{
+    "scenario":            "custom",
+    "births_m24":          custom_m24["births"],
+    "enrolments_m24":      custom_m24["enrolments_active"],
+    "total_receipts_m24":  custom_m24["total_receipts"],
+    "midwifery_costs_m24": custom_m24["midwifery_costs"],
+    "clinician_costs_m24": custom_m24["clinician_costs"],
+    "board_facility_m24":  custom_m24["board_facility"],
+    "total_costs_m24":     custom_m24["total_costs"],
+    "net_cashflow_m12":    custom_m12["net_cashflow"],
+    "net_cashflow_m24":    custom_m24["net_cashflow"],
+    "cumulative_cash_m24": custom_m24["cumulative_cash"],
+    "breakeven_month":     next(
+        (r["month"] for r in custom_rows if r["cumulative_cash"] >= 0), "not reached"
+    ),
+}])
+
+# --- Live readout in sidebar ---
+st.sidebar.divider()
+st.sidebar.markdown("**Live scenario result**")
+st.sidebar.metric("Cumulative cash M24", f"R {custom_m24['cumulative_cash']:,.0f}")
+st.sidebar.metric("Net cashflow M24", f"R {custom_m24['net_cashflow']:,.0f}")
+st.sidebar.metric("Break-even month", str(custom_summary.iloc[0]["breakeven_month"]))
+
+# --- Merge custom into working dataframes ---
+df_all      = pd.concat([df, df_custom], ignore_index=True)
+summary_all = pd.concat([summary, custom_summary], ignore_index=True)
+
+df_f        = df_all[df_all["scenario"].isin(selected)]
+summary_f   = summary_all[summary_all["scenario"].isin(selected)]
 
 # --- KPI cards ---
 st.subheader("Month 24 Summary")
 if selected:
     cols = st.columns(len(selected))
     for i, scen in enumerate(selected):
-        row = summary[summary["scenario"] == scen].iloc[0]
+        row = summary_all[summary_all["scenario"] == scen].iloc[0]
         cols[i].metric(
-            label=scen.replace("_", " ").title(),
+            label=SCENARIO_LABELS.get(scen, scen),
             value=f"R {row['cumulative_cash_m24']:,.0f}",
             delta=f"Net M24: R {row['net_cashflow_m24']:,.0f}",
         )
@@ -91,53 +162,52 @@ with col2:
 
 st.divider()
 
-# --- Row 2: Disaggregated cost waterfall (base scenario, month 24) ---
+# --- Row 2: Cost breakdown ---
 st.subheader("Cost Breakdown — Month 24")
 
-if "base" in selected:
-    base_m24 = df_f[(df_f["scenario"] == "base") & (df_f["month"] == 24)].iloc[0]
-else:
-    base_m24 = df_f[df_f["month"] == 24].iloc[0]
+ref_scen = "custom" if "custom" in selected else ("base" if "base" in selected else selected[0]) if selected else None
 
 col3, col4 = st.columns(2)
 
 with col3:
-    st.markdown(f"**{base_m24['scenario'].replace('_',' ').title()} — Month 24 cost stack**")
-    cost_labels = [
-        "Antenatal Midwifery",
-        "In-Hospital Midwifery",
-        "MO Sessions",
-        "MO Birth Fees",
-        "Anaesthesia",
-        "OB Pool",
-        "Board / Facility",
-    ]
-    cost_values = [
-        base_m24["antenatal_midwifery"],
-        base_m24["inhosp_midwifery"],
-        base_m24["mo_session_cost"],
-        base_m24["mo_birth_cost"],
-        base_m24["anaes_cost"],
-        base_m24["ob_pool"],
-        base_m24["board_facility"],
-    ]
-    fig3 = go.Figure(go.Bar(
-        x=cost_values,
-        y=cost_labels,
-        orientation="h",
-        marker_color=[
-            "#f3bdc4", "#d4878f",
-            "#599591", "#2e6b68", "#3a8582",
-            "#a8d5d3",
-            "#e8c07a",
-        ],
-        text=[f"R {v:,.0f}" for v in cost_values],
-        textposition="outside",
-    ))
-    fig3.add_vline(x=base_m24["residual"], line_dash="dash", line_color="#599591",
-                   annotation_text="Residual", annotation_position="top right")
-    fig3.update_layout(xaxis_title="R", yaxis_title="", margin=dict(l=160))
-    st.plotly_chart(fig3, width='stretch')
+    if ref_scen:
+        ref_m24 = df_f[(df_f["scenario"] == ref_scen) & (df_f["month"] == 24)].iloc[0]
+        st.markdown(f"**{SCENARIO_LABELS.get(ref_scen, ref_scen)} — Month 24 cost stack**")
+        cost_labels = [
+            "Antenatal Midwifery",
+            "In-Hospital Midwifery",
+            "MO Sessions",
+            "MO Birth Fees",
+            "Anaesthesia",
+            "OB Pool",
+            "Board / Facility",
+        ]
+        cost_values = [
+            ref_m24["antenatal_midwifery"],
+            ref_m24["inhosp_midwifery"],
+            ref_m24["mo_session_cost"],
+            ref_m24["mo_birth_cost"],
+            ref_m24["anaes_cost"],
+            ref_m24["ob_pool"],
+            ref_m24["board_facility"],
+        ]
+        fig3 = go.Figure(go.Bar(
+            x=cost_values,
+            y=cost_labels,
+            orientation="h",
+            marker_color=[
+                "#f3bdc4", "#d4878f",
+                "#599591", "#2e6b68", "#3a8582",
+                "#a8d5d3",
+                "#e8c07a",
+            ],
+            text=[f"R {v:,.0f}" for v in cost_values],
+            textposition="outside",
+        ))
+        fig3.add_vline(x=ref_m24["residual"], line_dash="dash", line_color="#599591",
+                       annotation_text="Residual", annotation_position="top right")
+        fig3.update_layout(xaxis_title="R", yaxis_title="", margin=dict(l=160))
+        st.plotly_chart(fig3, width='stretch')
 
 with col4:
     st.subheader("Midwifery vs Clinician vs Board")
@@ -153,7 +223,7 @@ with col4:
         "board_facility":   "Board / Facility",
     })
     fig4 = px.area(
-        cost_melt[cost_melt["scenario"].isin(selected)],
+        cost_melt,
         x="month", y="amount", color="cost_type",
         facet_col="scenario", facet_col_wrap=2,
         color_discrete_map={
@@ -168,7 +238,7 @@ with col4:
 
 st.divider()
 
-# --- Row 3: Revenue vs Total Costs ---
+# --- Row 3: Revenue vs Total Costs + Births ---
 col5, col6 = st.columns(2)
 
 with col5:
@@ -183,17 +253,19 @@ with col5:
     st.plotly_chart(fig5, width='stretch')
 
 with col6:
-    st.subheader("Births by Type — Base Scenario")
-    base_df = df[df["scenario"] == "base"].copy()
+    ref_births_scen = "custom" if "custom" in selected else "base"
+    births_df = df_all[df_all["scenario"] == ref_births_scen].copy()
+    st.subheader(f"Births by Type — {SCENARIO_LABELS.get(ref_births_scen, ref_births_scen)}")
+    mo_nvd_pct = custom_params["mo_nvd_pct"] if ref_births_scen == "custom" else BASE["mo_nvd_pct"]
     fig6 = go.Figure()
-    fig6.add_trace(go.Bar(name="NVD (midwife-only)", x=base_df["month"],
-                          y=(base_df["nvd_cases"] * (1 - 0.175)).round(1),
+    fig6.add_trace(go.Bar(name="NVD (midwife-only)", x=births_df["month"],
+                          y=(births_df["nvd_cases"] * (1 - mo_nvd_pct)).round(1),
                           marker_color="#f3bdc4"))
-    fig6.add_trace(go.Bar(name="NVD (MO-assisted)", x=base_df["month"],
-                          y=(base_df["nvd_cases"] * 0.175).round(1),
+    fig6.add_trace(go.Bar(name="NVD (MO-assisted)", x=births_df["month"],
+                          y=(births_df["nvd_cases"] * mo_nvd_pct).round(1),
                           marker_color="#599591"))
-    fig6.add_trace(go.Bar(name="CS", x=base_df["month"],
-                          y=base_df["cs_cases"].round(1),
+    fig6.add_trace(go.Bar(name="CS", x=births_df["month"],
+                          y=births_df["cs_cases"].round(1),
                           marker_color="#2e6b68"))
     fig6.update_layout(barmode="stack", xaxis_title="Month", yaxis_title="Cases",
                        legend_title="Birth Type", hovermode="x unified")
@@ -214,7 +286,7 @@ fmt = {
     "cumulative_cash_m24":  "R {:,.0f}",
 }
 st.dataframe(
-    summary[summary["scenario"].isin(selected)].set_index("scenario").style.format(fmt),
+    summary_f.set_index("scenario").style.format(fmt),
     width='stretch',
 )
 
