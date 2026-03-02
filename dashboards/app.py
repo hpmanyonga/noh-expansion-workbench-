@@ -72,7 +72,8 @@ st.sidebar.header("Live Negotiation")
 st.sidebar.caption("Adjust assumptions to model different partnership terms.")
 
 custom_births      = st.sidebar.slider("Birth volume target (Month 24)", 20, 120, int(BASE["births_end"]), step=1)
-custom_board_rate  = st.sidebar.slider("Board / facility rate (R/day)", 1_000, 6_000, int(BASE["room_rate_per_day"]), step=100)
+custom_nvd_rate    = st.sidebar.slider("NVD per diem (R/day)", 1_000, 6_000, int(BASE["nvd_room_rate"]), step=100)
+custom_cs_rate_bd  = st.sidebar.slider("CS per diem (R/day)", 2_000, 10_000, int(BASE["cs_room_rate"]), step=100)
 custom_cs_rate     = st.sidebar.slider("CS rate target (%)", 20, 55, int(BASE["cs_rate_target"] * 100)) / 100
 custom_ma_share    = st.sidebar.slider("MA share target (%)", 20, 80, int(BASE["ma_share_target"] * 100)) / 100
 custom_noh_fee     = st.sidebar.slider("NOH fee (%)", 5, 25, int(BASE["noh_fee_pct"] * 100)) / 100
@@ -81,7 +82,8 @@ custom_noh_fee     = st.sidebar.slider("NOH fee (%)", 5, 25, int(BASE["noh_fee_p
 custom_params = {**BASE,
     "births_end":       custom_births,
     "enrolments_end":   max(1, round(custom_births * (BASE["enrolments_end"] / BASE["births_end"]))),
-    "room_rate_per_day": custom_board_rate,
+    "nvd_room_rate":    custom_nvd_rate,
+    "cs_room_rate":     custom_cs_rate_bd,
     "cs_rate_target":   custom_cs_rate,
     "ma_share_target":  custom_ma_share,
     "noh_fee_pct":      custom_noh_fee,
